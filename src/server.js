@@ -8,19 +8,27 @@ import crypto from 'crypto';
 const app = express();
 
 const PORT = Number(process.env.PORT || 3000);
-const TIKTOK_ENDPOINT = process.env.TIKTOK_ENDPOINT || 'https://business-api.tiktok.com/open_api/v1.3/event/track/';
+const TIKTOK_ENDPOINT =
+  process.env.TIKTOK_ENDPOINT ||
+  'https://business-api.tiktok.com/open_api/v1.3/event/track/';
+
 const SERVER_KEY = process.env.SERVER_KEY || '';
-const REQUIRE_SERVER_KEY = String(process.env.REQUIRE_SERVER_KEY || 'true').toLowerCase() !== 'false';
+const REQUIRE_SERVER_KEY =
+  String(process.env.REQUIRE_SERVER_KEY || 'true').toLowerCase() !== 'false';
+
 const DEFAULT_EVENT = process.env.DEFAULT_EVENT || 'CompleteRegistration';
 const DEFAULT_CURRENCY = process.env.DEFAULT_CURRENCY || 'USD';
 const DEFAULT_TEST_EVENT_CODE = process.env.DEFAULT_TEST_EVENT_CODE || '';
+
 const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS || '')
   .split(',')
   .map((s) => s.trim())
   .filter(Boolean);
 
 if (REQUIRE_SERVER_KEY && !SERVER_KEY) {
-  throw new Error('SERVER_KEY is required. Set SERVER_KEY in .env or set REQUIRE_SERVER_KEY=false for local testing only.');
+  throw new Error(
+    'SERVER_KEY is required. Set SERVER_KEY in .env or set REQUIRE_SERVER_KEY=false for local testing only.'
+  );
 }
 
 app.set('trust proxy', true);
@@ -38,6 +46,7 @@ function maskSecret(value) {
 function safeUrlForLog(req) {
   try {
     const url = new URL(req.originalUrl || req.url, 'http://local');
+
     const secretParams = new Set([
       'access_token',
       'server_key',
@@ -62,14 +71,21 @@ function safeUrlForLog(req) {
 }
 
 morgan.token('safe-url', safeUrlForLog);
-app.use(morgan(':remote-addr - :method :safe-url :status :res[content-length] - :response-time ms'));
 
-app.use(rateLimit({
-  windowMs: Number(process.env.RATE_LIMIT_WINDOW_MS || 60_000),
-  limit: Number(process.env.RATE_LIMIT_MAX || 300),
-  standardHeaders: true,
-  legacyHeaders: false
-}));
+app.use(
+  morgan(
+    ':remote-addr - :method :safe-url :status :res[content-length] - :response-time ms'
+  )
+);
+
+app.use(
+  rateLimit({
+    windowMs: Number(process.env.RATE_LIMIT_WINDOW_MS || 60_000),
+    limit: Number(process.env.RATE_LIMIT_MAX || 300),
+    standardHeaders: true,
+    legacyHeaders: false
+  })
+);
 
 function firstValue(value) {
   if (Array.isArray(value)) return value[0];
@@ -79,9 +95,18 @@ function firstValue(value) {
 function clean(value) {
   const raw = firstValue(value);
   if (raw === undefined || raw === null) return undefined;
+
   const str = String(raw).trim();
   if (!str) return undefined;
-  const bad = new Set(['DINAMIC_VALUE', 'DYNAMIC_VALUE', 'undefined', 'null', 'none']);
+
+  const bad = new Set([
+    'DINAMIC_VALUE',
+    'DYNAMIC_VALUE',
+    'undefined',
+    'null',
+    'none'
+  ]);
+
   if (bad.has(str)) return undefined;
   return str;
 }
@@ -98,24 +123,25 @@ function normalizeIdentifier(key, value) {
   const v = clean(value);
   if (!v) return undefined;
 
-  // If already SHA-256 hex, do not hash again.
+  // Nếu dữ liệu đã là SHA-256 hex thì không hash lại.
   if (isSha256Hex(v)) return v.toLowerCase();
 
-  // TikTok matching keys should be normalized then SHA-256 hashed.
-  if (key === 'email') return sha256(v.toLowerCase());
+  if (key === 'email') {
+    return sha256(v.toLowerCase());
+  }
 
-  // Keep + for E.164 style, remove spaces and common separators before hashing.
   if (key === 'phone_number') {
+    // Giữ dấu + nếu có, xoá khoảng trắng và ký tự phân tách phổ biến.
     const phone = v.replace(/[\s().-]/g, '');
     return sha256(phone.toLowerCase());
   }
 
-  // external_id is often an internal user id. Trim/lowercase before hashing for consistency.
+  // external_id
   return sha256(v.toLowerCase());
 }
 
 function pickPayload(req) {
-  // Accept both GET query and POST JSON/form body. Body overrides query when both exist.
+  // Hỗ trợ cả GET query và POST body. Body override query nếu trùng field.
   return { ...req.query, ...(req.body || {}) };
 }
 
@@ -131,8 +157,10 @@ function getClientIp(req, input) {
 
 function ensureAllowedOrigin(req) {
   if (!ALLOWED_ORIGINS.length) return true;
+
   const origin = clean(req.headers.origin) || clean(req.headers.referer);
   if (!origin) return false;
+
   return ALLOWED_ORIGINS.some((allowed) => origin.startsWith(allowed));
 }
 
@@ -145,7 +173,6 @@ function timingSafeEqualString(a, b) {
 }
 
 function getIncomingServerKey(req, input) {
-  // Support query/body/header so client can choose the easiest way.
   return (
     clean(input.server_key) ||
     clean(input.key) ||
@@ -162,6 +189,32 @@ function ensureServerKey(req, input) {
   if (!SERVER_KEY || !incomingKey) return false;
 
   return timingSafeEqualString(incomingKey, SERVER_KEY);
+}
+
+function normalizePageUrl(value) {
+  const pageUrl = clean(value);
+  if (!pageUrl) return undefined;
+
+  if (pageUrl.startsWith('http://') || pageUrl.startsWith('https://')) {
+    return pageUrl;
+  }
+
+  return `https://${pageUrl}`;
+}
+
+function normalizeTimestamp(value) {
+  const timestamp = clean(value);
+  if (!timestamp) return Math.floor(Date.now() / 1000);
+
+  const n = Number(timestamp);
+  if (!Number.isFinite(n)) return Math.floor(Date.now() / 1000);
+
+  // Nếu client gửi milliseconds thì convert về seconds.
+  if (n > 10_000_000_000) {
+    return Math.floor(n / 1000);
+  }
+
+  return Math.floor(n);
 }
 
 function buildTikTokPayload(req) {
@@ -181,11 +234,13 @@ function buildTikTokPayload(req) {
 
   const accessToken = clean(input.access_token);
   const pixelCode = clean(input.pixel_code);
+
   if (!accessToken) {
     const err = new Error('Missing required parameter: access_token');
     err.status = 400;
     throw err;
   }
+
   if (!pixelCode) {
     const err = new Error('Missing required parameter: pixel_code');
     err.status = 400;
@@ -193,6 +248,7 @@ function buildTikTokPayload(req) {
   }
 
   const user = {};
+
   const externalId = normalizeIdentifier('external_id', input.external_id);
   const email = normalizeIdentifier('email', input.email);
   const phoneNumber = normalizeIdentifier('phone_number', input.phone_number);
@@ -201,15 +257,11 @@ function buildTikTokPayload(req) {
   if (email) user.email = email;
   if (phoneNumber) user.phone_number = phoneNumber;
 
-  const pageUrl = clean(input.url);
   const ip = getClientIp(req, input);
   const userAgent = clean(input.user_agent) || clean(req.headers['user-agent']);
 
-  const context = {};
-  if (Object.keys(user).length) context.user = user;
-  if (pageUrl) context.page = { url: pageUrl };
-  if (ip) context.ip = ip;
-  if (userAgent) context.user_agent = userAgent;
+  if (ip) user.ip = ip;
+  if (userAgent) user.user_agent = userAgent;
 
   const properties = {
     currency: DEFAULT_CURRENCY
@@ -221,21 +273,48 @@ function buildTikTokPayload(req) {
     properties.value = Number.isFinite(numericValue) ? numericValue : value;
   }
 
+  const pageUrl = normalizePageUrl(input.url);
   const eventId = clean(input.event_id);
-  const payload = {
-    pixel_code: pixelCode,
+  const eventTime = normalizeTimestamp(input.timestamp);
+
+  const eventData = {
     event: DEFAULT_EVENT,
-    context,
+    event_time: eventTime,
+    user,
     properties
   };
 
-  if (eventId) payload.event_id = eventId;
+  if (pageUrl) {
+    eventData.page = {
+      url: pageUrl
+    };
+  }
 
-  const timestamp = clean(input.timestamp);
-  if (timestamp) payload.timestamp = timestamp;
+  if (eventId) {
+    eventData.event_id = eventId;
+  }
 
-  const testEventCode = clean(input.test_event_code) || clean(DEFAULT_TEST_EVENT_CODE);
-  if (testEventCode) payload.test_event_code = testEventCode;
+  /*
+    TikTok Events API format:
+    - event_source: web
+    - event_source_id: Pixel Code / Pixel ID
+    - data: array of event objects
+
+    Trước đó dùng pixel_code top-level nên TikTok báo:
+    "Invalid value for event_source_id"
+  */
+  const payload = {
+    event_source: 'web',
+    event_source_id: pixelCode,
+    data: [eventData]
+  };
+
+  const testEventCode =
+    clean(input.test_event_code) || clean(DEFAULT_TEST_EVENT_CODE);
+
+  if (testEventCode) {
+    payload.test_event_code = testEventCode;
+  }
 
   return { accessToken, pixelCode, payload };
 }
@@ -246,12 +325,13 @@ async function sendToTikTok(accessToken, payload) {
     headers: {
       'Access-Token': accessToken,
       'Content-Type': 'application/json',
-      'Accept': 'application/json'
+      Accept: 'application/json'
     },
     body: JSON.stringify(payload)
   });
 
   const text = await response.text();
+
   let data;
   try {
     data = text ? JSON.parse(text) : {};
@@ -276,7 +356,6 @@ async function trackHandler(req, res) {
     const { accessToken, pixelCode, payload } = buildTikTokPayload(req);
     const result = await sendToTikTok(accessToken, payload);
 
-    // Return HTTP 200 for TikTok success. If TikTok returns code != 0, expose error clearly.
     const tiktokCode = result?.tiktok?.code;
     const success = result.ok && (tiktokCode === undefined || tiktokCode === 0);
 
@@ -289,6 +368,7 @@ async function trackHandler(req, res) {
     });
   } catch (error) {
     const status = error.status || 500;
+
     return res.status(status).json({
       success: false,
       error: error.message || 'Internal Server Error'
@@ -297,17 +377,23 @@ async function trackHandler(req, res) {
 }
 
 app.get('/health', (_req, res) => {
-  res.json({ ok: true, service: 'tiktok-capi-server' });
+  res.json({
+    ok: true,
+    service: 'tiktok-capi-server'
+  });
 });
 
-// Main endpoints. Both GET and POST are supported.
+// Main endpoints. Hỗ trợ cả GET và POST.
 app.get('/', trackHandler);
 app.post('/', trackHandler);
 app.get('/track', trackHandler);
 app.post('/track', trackHandler);
 
 app.use((_req, res) => {
-  res.status(404).json({ success: false, error: 'Not found' });
+  res.status(404).json({
+    success: false,
+    error: 'Not found'
+  });
 });
 
 app.listen(PORT, () => {
