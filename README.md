@@ -2,11 +2,14 @@
 
 Server Node.js nhận URL GET/POST, kiểm tra `server_key`, tự chuẩn hoá/hash `external_id`, `email`, `phone_number` bằng SHA-256 nếu chưa hash, rồi gọi TikTok Events API.
 
+Hỗ trợ **lead cache** bằng SQLite: Prelander lưu tạm thông tin user theo `click_id`, sau đó khi có conversion thật chỉ cần truyền `click_id` — server tự enrich dữ liệu và gửi TikTok CAPI.
+
 ## 1. Cài đặt local
 
 ```bash
 npm install
 cp .env.example .env
+# Chỉnh SERVER_KEY trong .env
 npm run dev
 ```
 
@@ -16,85 +19,158 @@ Health check:
 curl http://localhost:3000/health
 ```
 
-## 2. Cấu hình server key
-
-Mặc định server yêu cầu `SERVER_KEY` để tránh người ngoài gọi URL bừa bãi.
-
-Trong file `.env`, đổi dòng này thành secret thật:
+## 2. Cấu hình .env
 
 ```env
+PORT=3000
+NODE_ENV=production
+
+TIKTOK_ENDPOINT=https://business-api.tiktok.com/open_api/v1.3/event/track/
+
 REQUIRE_SERVER_KEY=true
 SERVER_KEY=CHANGE_ME_TO_A_LONG_RANDOM_SECRET
+
+ALLOWED_ORIGINS=
+
+DEFAULT_EVENT=CompleteRegistration
+DEFAULT_CURRENCY=USD
+DEFAULT_TEST_EVENT_CODE=
+
+RATE_LIMIT_WINDOW_MS=60000
+RATE_LIMIT_MAX=300
+
+# Lead Cache (SQLite)
+LEAD_CACHE_DB_PATH=./data/capi-cache.db
+LEAD_CACHE_TTL_SECONDS=10800
+LEAD_CACHE_CLEANUP_INTERVAL_SECONDS=600
 ```
 
-Tạo key ngẫu nhiên trên server:
+Tạo `SERVER_KEY` ngẫu nhiên:
 
 ```bash
 openssl rand -hex 32
 ```
 
-Ví dụ:
+## 3. Flow /capture + /track
 
-```env
-SERVER_KEY=8cf9a9e2c8a8c94dfdc8e5f5b8b4d5a85fd37a02c967111bc219c40e115b69a1
+```
+1. User vào Prelander
+2. Prelander gọi GET /capture?server_key=...&click_id=CLICK123&email=...&phone_number=...
+3. Server hash + lưu vào SQLite, TTL 3 tiếng
+4. Khi có conversion, hệ thống gọi GET /?server_key=...&access_token=...&pixel_code=...&click_id=CLICK123&value=3
+5. Server lookup click_id, merge dữ liệu vào TikTok payload
+6. Gửi TikTok Events API
 ```
 
-## 3. URL mẫu GET có server_key
+> **Lưu ý:** Dữ liệu cache tự xoá sau 3 tiếng. Không lưu raw email/phone — chỉ lưu SHA-256 hash.
+
+## 4. Endpoint /capture — Lưu tạm lead
+
+### GET
 
 ```bash
-curl "http://localhost:3000/track?server_key=YOUR_SERVER_KEY&access_token=YOUR_ACCESS_TOKEN&pixel_code=D51A6ORC77UCC7FFQ1N0&external_id=user123&email=test@example.com&phone_number=%2B84901234567&url=https%3A%2F%2Fquickpayly.com&ip=2607%3Afb91%3A5305%3A42f5%3Ae0e6%3A6816%3A5bf%3A999c&user_agent=Mozilla%2F5.0&event_id=W_WM4RJP&value=2.83"
+curl "https://api.lendoraai.site/capture?server_key=SERVER_KEY&click_id=CLICK123&email=email@gmail.com&phone_number=8900343434&external_id=user123&url=quickpayly.com&ip=1.1.1.1&user_agent=chrome"
 ```
 
-URL production:
-
-```txt
-https://your-domain.com/?server_key=YOUR_SERVER_KEY&access_token=YOUR_ACCESS_TOKEN&pixel_code=PIXEL_CODE&external_id=EXTERNAL_ID&email=EMAIL&phone_number=PHONE&url=PAGE_URL&ip=IP&user_agent=USER_AGENT&event_id=EVENT_ID&value=VALUE
-```
-
-Server cũng hỗ trợ alias ngắn nếu cần:
-
-```txt
-?key=YOUR_SERVER_KEY
-?sk=YOUR_SERVER_KEY
-```
-
-Hoặc truyền qua header thay vì query:
+### POST JSON
 
 ```bash
-curl "http://localhost:3000/track?access_token=YOUR_ACCESS_TOKEN&pixel_code=D51A6ORC77UCC7FFQ1N0&external_id=user123&email=test@example.com&phone_number=%2B84901234567&url=https%3A%2F%2Fquickpayly.com&event_id=W_WM4RJP&value=2.83" \
-  -H "x-server-key: YOUR_SERVER_KEY"
-```
-
-## 4. POST JSON mẫu
-
-```bash
-curl --location --request POST 'http://localhost:3000/track' \
+curl --location --request POST 'https://api.lendoraai.site/capture' \
   --header 'Content-Type: application/json' \
-  --header 'x-server-key: YOUR_SERVER_KEY' \
+  --header 'x-server-key: SERVER_KEY' \
   --data-raw '{
-    "access_token": "YOUR_ACCESS_TOKEN",
-    "pixel_code": "D51A6ORC77UCC7FFQ1N0",
+    "click_id": "CLICK123",
+    "email": "email@gmail.com",
+    "phone_number": "+84900343434",
     "external_id": "user123",
-    "email": "test@example.com",
-    "phone_number": "+84901234567",
     "url": "https://quickpayly.com",
-    "ip": "2607:fb91:5305:42f5:e0e6:6816:5bf:999c",
-    "user_agent": "Mozilla/5.0",
-    "event_id": "W_WM4RJP",
-    "value": "2.83"
+    "ip": "1.1.1.1",
+    "user_agent": "Mozilla/5.0"
   }'
 ```
 
-## 5. Logic đang hardcode theo yêu cầu khách
+Response:
 
-- `event`: `CompleteRegistration`
-- `currency`: `USD`
-- `access_token`: lấy từ URL/body
-- `pixel_code`: lấy từ URL/body
-- `url`: khách tự gắn vào biến `url=` khi gọi API
-- `external_id`, `email`, `phone_number`: server tự hash SHA-256 nếu chưa hash
+```json
+{
+  "success": true,
+  "message": "Lead cache saved",
+  "click_id": "CLICK123",
+  "expires_in_seconds": 10800,
+  "expires_at": 1234567890,
+  "stored_fields": {
+    "email": true,
+    "phone_number": true,
+    "external_id": true
+  }
+}
+```
 
-## 6. Deploy Ubuntu/DigitalOcean
+## 5. Endpoint /track — Gửi CAPI với click_id
+
+```bash
+curl "https://api.lendoraai.site/?server_key=SERVER_KEY&access_token=ACCESS_TOKEN&pixel_code=PIXEL_CODE&click_id=CLICK123&event_id=EVT123&value=3"
+```
+
+Response khi tìm thấy click_id:
+
+```json
+{
+  "success": true,
+  "pixel_code": "D8...",
+  "access_token": "28ed***cf86",
+  "click_id": "CLICK123",
+  "enriched": true,
+  "enrichment_source": "cache",
+  "enrichment_warning": null,
+  "result": {
+    "http_status": 200,
+    "ok": true,
+    "tiktok": { "code": 0, "message": "OK" }
+  }
+}
+```
+
+Response khi không tìm thấy click_id:
+
+```json
+{
+  "success": true,
+  "click_id": "NOTFOUND",
+  "enriched": false,
+  "enrichment_source": null,
+  "enrichment_warning": "click_id not found or expired",
+  "result": { ... }
+}
+```
+
+## 6. Endpoint /cache/stats
+
+Thống kê cache (yêu cầu server_key):
+
+```bash
+curl "https://api.lendoraai.site/cache/stats?server_key=SERVER_KEY"
+```
+
+```json
+{
+  "success": true,
+  "total_records": 10,
+  "active_records": 8,
+  "expired_records": 2,
+  "ttl_seconds": 10800
+}
+```
+
+## 7. URL backward-compatible (không dùng click_id)
+
+```bash
+curl "https://api.lendoraai.site/?server_key=SERVER_KEY&access_token=ACCESS_TOKEN&pixel_code=PIXEL_CODE&external_id=user123&email=test@example.com&phone_number=%2B84901234567&url=https%3A%2F%2Fquickpayly.com&ip=1.1.1.1&user_agent=Mozilla%2F5.0&event_id=W_WM4RJP&value=2.83"
+```
+
+## 8. Deploy / Update trên server
+
+### Deploy lần đầu
 
 ```bash
 sudo apt update
@@ -103,10 +179,10 @@ curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
 sudo apt install -y nodejs
 sudo npm install -g pm2
 
-sudo mkdir -p /var/www/tiktok-capi
-sudo chown -R $USER:$USER /var/www/tiktok-capi
-# Upload/copy source vào /var/www/tiktok-capi
-cd /var/www/tiktok-capi
+sudo mkdir -p /var/www/Capiserver
+sudo chown -R $USER:$USER /var/www/Capiserver
+# Upload/copy source vào /var/www/Capiserver
+cd /var/www/Capiserver
 npm install --omit=dev
 cp .env.example .env
 nano .env
@@ -128,12 +204,40 @@ SSL:
 
 ```bash
 sudo apt install -y certbot python3-certbot-nginx
-sudo certbot --nginx -d capitiktokcustome.com -d www.capitiktokcustome.com
+sudo certbot --nginx -d your-domain.com -d www.your-domain.com
 ```
 
-## 7. Bảo mật
+### Update (pull code mới)
 
-- `server_key` hiện là bắt buộc nếu `REQUIRE_SERVER_KEY=true`.
-- App log đã che các query nhạy cảm như `access_token`, `server_key`, `email`, `phone_number`, `external_id`.
-- File Nginx mẫu đã `access_log off` để tránh lưu token/key trong log URL.
+```bash
+cd /var/www/Capiserver
+git pull
+npm install --omit=dev
+pm2 restart tiktok-capi-server
+pm2 logs tiktok-capi-server --lines 100
+```
+
+## 9. Bảo mật
+
+- `server_key` so sánh bằng `crypto.timingSafeEqual` — chống timing attack.
+- Log URL tự động mask: `access_token`, `server_key`, `email`, `phone_number`, `external_id`.
+- Chỉ lưu SHA-256 hash vào SQLite — không lưu raw email/phone.
+- Nginx `access_log off` để tránh lộ token trong Nginx log.
+- Rate limit: 300 req/phút (configurable).
 - Không gửi `test_event_code` trên production sau khi test xong.
+
+## 10. Cấu trúc project
+
+```txt
+Capiserver/
+├── data/
+│   └── capi-cache.db        # SQLite DB (tự tạo khi khởi động)
+├── src/
+│   ├── db.js                # SQLite wrapper (lead cache)
+│   └── server.js            # Express server
+├── .env.example
+├── ecosystem.config.cjs
+├── nginx-example.conf
+├── package.json
+└── README.md
+```

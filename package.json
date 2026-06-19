@@ -1,7 +1,7 @@
 {
   "name": "tiktok-capi-server",
   "version": "1.0.0",
-  "description": "Simple GET/POST bridge server for TikTok Events API / CAPI",
+  "description": "GET/POST bridge server for TikTok Events API / CAPI with SQLite lead cache",
   "main": "src/server.js",
   "type": "module",
   "scripts": {
@@ -12,6 +12,7 @@
     "node": ">=20"
   },
   "dependencies": {
+    "better-sqlite3": "^11.10.0",
     "dotenv": "^16.4.7",
     "express": "^4.21.2",
     "express-rate-limit": "^7.4.1",
