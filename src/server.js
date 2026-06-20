@@ -109,6 +109,20 @@ function clean(value) {
 function isSha256Hex(v) { return /^[a-f0-9]{64}$/i.test(v || ''); }
 function sha256(v)      { return crypto.createHash('sha256').update(v).digest('hex'); }
 
+/**
+ * Trả true nếu giá trị phone nên bị coi là "không có".
+ * - null / undefined / chuỗi rỗng
+ * - "999999999" — giá trị mặc định phía khách dùng khi user không có phone
+ */
+function isEmptyPhoneValue(value) {
+  if (value == null) return true;
+  const raw = String(value).trim();
+  if (!raw) return true;
+  const digitsOnly = raw.replace(/\D/g, '');
+  if (digitsOnly === '999999999') return true;
+  return false;
+}
+
 function normalizeIdentifier(key, value) {
   const v = clean(value);
   if (!v) return undefined;
@@ -208,9 +222,12 @@ async function captureHandler(req, res) {
 
     // Normalize identifiers (hash if not already hashed)
     const emailHash      = normalizeIdentifier('email',        input.email);
-    // Support both phone and phone_number as input aliases
-    const rawPhone       = clean(input.phone) || clean(input.phone_number);
-    const phoneHash      = rawPhone ? normalizeIdentifier('phone_number', rawPhone) : undefined;
+    // Support both phone and phone_number as input aliases.
+    // 999999999 = giá trị mặc định phía khách, coi như không có phone.
+    const rawPhone  = clean(input.phone) || clean(input.phone_number);
+    const phoneHash = (!isEmptyPhoneValue(rawPhone) && rawPhone)
+      ? normalizeIdentifier('phone_number', rawPhone)
+      : undefined;
     const externalIdHash = normalizeIdentifier('external_id', input.external_id);
 
     // Tracking metadata — stored raw
@@ -299,11 +316,12 @@ async function buildTikTokPayload(req) {
   const email = normalizeIdentifier('email', input.email) || cached?.email_hash;
   if (email) user.email = email;
 
-  // Phone (input: phone or phone_number; stored as phone_number in TikTok payload for backward compat)
+  // Phone (input: phone or phone_number; stored as phone_number in TikTok payload for backward compat).
+  // 999999999 = giá trị mặc định phía khách, coi như không có phone — không hash, không gửi TikTok.
   const rawPhone  = clean(input.phone) || clean(input.phone_number);
-  const phoneHash = rawPhone
+  const phoneHash = (!isEmptyPhoneValue(rawPhone) && rawPhone)
     ? normalizeIdentifier('phone_number', rawPhone)
-    : cached?.phone_hash;
+    : (!isEmptyPhoneValue(rawPhone) ? cached?.phone_hash : undefined);
   if (phoneHash) user.phone_number = phoneHash; // TikTok field name is phone_number
 
   // external_id (hash)
