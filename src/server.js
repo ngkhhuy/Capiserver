@@ -384,6 +384,7 @@ async function buildTikTokPayload(req) {
 }
 
 async function sendToTikTok(accessToken, payload) {
+  console.log('Outbound TikTok Payload:', JSON.stringify(payload, null, 2));
   const response = await fetch(TIKTOK_ENDPOINT, {
     method:  'POST',
     headers: { 'Access-Token': accessToken, 'Content-Type': 'application/json', Accept: 'application/json' },
